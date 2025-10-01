@@ -1,0 +1,34 @@
+fedora:
+  collection: ${DEPOSIT_FEDORA_COLLECTION_ID}
+  username: ${DEPOSIT_FEDORA_USERNAME}
+  password: ${DEPOSIT_FEDORA_PASSWORD}
+  maxInMemorySizeInBytes: 6554000
+  depositConfiguration:
+    deposit-type: 2
+    repository-id: fedora
+    access-token:
+    repository-url: ${DEPOSIT_FEDORA_URL}
+    repository-authorization-url:
+    repository-record-url: ${DEPOSIT_FEDORA_RECORD_URL}
+    repository-access-token-url:
+    repository-client-id:
+    repository-client-secret:
+    redirect-uri:
+    has-logo: ${DEPOSIT_FEDORA_HAS_LOGO:true}
+    useSharedStorage: ${DEPOSIT_FEDORA_USE_SHARED_STORAGE:false}
+    configuration-fields:
+    user-configuration-fields:
+      - code: fedora-username
+        type: 0
+        label: Username
+        authInfo: true
+      - code: fedora-password
+        type: 0
+        label: Password
+        authInfo: true
+    auth-methods:
+      - PluginDefault
+      - AuthInfoFromUserProfile
+  domain: ${OPENCDMP_DOMAIN}
+  logo: ${DEPOSIT_FEDORA_LOGO_PATH:classpath:fedora.png}
+

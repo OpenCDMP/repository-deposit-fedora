@@ -1,0 +1,15 @@
+semantics:
+  available:
+    - name: "fedora.creator"
+    - name: "fedora.subject"
+    - name: "fedora.description"
+    - name: "fedora.publisher"
+    - name: "fedora.contributor"
+    - name: "fedora.type"
+    - name: "fedora.format"
+    - name: "fedora.identifier"
+    - name: "fedora.source"
+    - name: "fedora.language"
+    - name: "fedora.relation"
+    - name: "fedora.coverage"
+    - name: "fedora.rights"
