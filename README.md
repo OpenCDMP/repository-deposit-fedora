@@ -11,6 +11,8 @@ This service integrates with the OpenCDMP platform to provide deposit functional
 - ✅ Automatic DOI minting
 - ✅ System-based and user-based depositions
 
+**Supported Fedora version:** 6.x
+
 ---
 
 ## Quick start

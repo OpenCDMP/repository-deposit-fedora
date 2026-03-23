@@ -1,6 +1,5 @@
 package org.opencdmp.deposit.fedorarepository.service.fedora;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import gr.cite.tools.logging.LoggerService;
 import gr.cite.tools.logging.MapLogEntry;
 import org.apache.jena.rdf.model.Model;
@@ -34,6 +33,7 @@ import java.util.*;
 
 
 import reactor.netty.http.client.HttpClient;
+import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class FedoraDepositServiceImpl implements FedoraDepositService {
@@ -63,7 +63,7 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     }
 
     @Override
-    public String deposit(PlanDepositModel planDepositModel) throws Exception {
+    public String deposit(PlanDepositModel planDepositModel) {
 
         DepositConfiguration depositConfiguration = this.getConfiguration();
 
@@ -106,7 +106,11 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
             } catch (HttpClientErrorException | HttpServerErrorException ex) {
                 logger.error(ex.getMessage(), ex);
                 Map<String, String> parsedException = objectMapper.readValue(ex.getResponseBodyAsString(), Map.class);
-                throw new IOException(parsedException.get("message"), ex);
+                try {
+                    throw new IOException(parsedException.get("message"), ex);
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
             }
 
         }
