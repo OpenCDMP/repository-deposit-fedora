@@ -1,5 +1,5 @@
 fedora:
-  collection: ${DEPOSIT_FEDORA_COLLECTION_ID}
+  collection: ${DEPOSIT_FEDORA_COLLECTION_ID:}
   username: ${DEPOSIT_FEDORA_USERNAME}
   password: ${DEPOSIT_FEDORA_PASSWORD}
   maxInMemorySizeInBytes: 6554000
@@ -16,7 +16,124 @@ fedora:
     redirect-uri:
     has-logo: ${DEPOSIT_FEDORA_HAS_LOGO:true}
     useSharedStorage: ${DEPOSIT_FEDORA_USE_SHARED_STORAGE:false}
+    uploaded-files:
+      - PlanDocument
+      - RdaJson
+      - SupportingFiles
     configuration-fields:
+      - code: publish-ways
+        type: 3
+        label: "Ways to publish"
+        group: "Who publishes"
+        description: "Which accounts users can publish under."
+        defaultValue: "both"
+        options:
+          - label: "The organisation's account and users' own accounts"
+            value: "both"
+          - label: "Only the organisation's account"
+            value: "organisation"
+          - label: "Only users' own accounts"
+            value: "own"
+      - code: publish-preselected
+        type: 3
+        label: "Preselected"
+        group: "Who publishes"
+        description: "The choice users see selected when both are allowed. Users with saved credentials always start on their own account."
+        defaultValue: "own"
+        options:
+          - label: "Users' own accounts"
+            value: "own"
+          - label: "The organisation's account"
+            value: "organisation"
+      - code: organisation-account-name
+        type: 0
+        label: "Organisation account name"
+        group: "Who publishes"
+        description: "What users see in “Publish as”. Empty: “The organisation's Fedora account”."
+      - code: organisation-username
+        type: 0
+        label: "Username"
+        group: "Organisation account"
+        description: "The username of the Fedora account to publish under when users choose the organisation's account. Empty: the installation's account is used."
+        authInfo: true
+      - code: organisation-password
+        type: 0
+        label: "Password"
+        group: "Organisation account"
+        description: "The password of the Fedora account to publish under when users choose the organisation's account. Empty: the installation's account is used."
+        authInfo: true
+      - code: container
+        type: 0
+        label: "Container"
+        group: "Fedora record"
+        description: "The path under the repository URL where new records are created, such as plans/opencdmp. It must already exist. New versions stay where their record is. Empty: the installation's value, else the repository root."
+      - code: publisher
+        type: 0
+        label: "Publisher"
+        group: "Fedora record"
+        description: "The publisher (dc:publisher) of the records when the blueprint or a template maps none."
+      - code: rights
+        type: 0
+        label: "Rights"
+        group: "Fedora record"
+        description: "The rights statement (dc:rights) of the records when the blueprint or a template maps none."
+      - code: authors-from-members
+        type: 3
+        label: "Authors from plan members"
+        group: "Fedora record"
+        description: "Which plan members are credited as authors."
+        defaultValue: "all"
+        options:
+          - label: "Every member"
+            value: "all"
+          - label: "Owners and editors"
+            value: "contributors"
+          - label: "Owners only"
+            value: "owners"
+          - label: "None (only what the blueprint maps)"
+            value: "none"
+      - code: link-public-plan
+        type: 3
+        label: "Link the public plan page"
+        group: "Fedora record"
+        description: "Adds the plan's public OpenCDMP page to the record when the plan is public."
+        defaultValue: "true"
+        options:
+          - label: "Yes"
+            value: "true"
+          - label: "No"
+            value: "false"
+      - code: deposit-files
+        type: 7
+        label: "Files to deposit"
+        group: "Files"
+        description: "Which files are uploaded with the record. Empty: all of them."
+        options:
+          - label: "Plan document"
+            value: "PlanDocument"
+          - label: "Machine-actionable plan (RDA JSON)"
+            value: "RdaJson"
+          - label: "Supporting files"
+            value: "SupportingFiles"
+      - code: review-hidden-sections
+        type: 7
+        label: "Hidden sections"
+        group: "Review"
+        description: "Sections users never see in the review. Values your plans map into them are still published."
+        options:
+          - label: "Basic information"
+            value: "basic-information"
+      - code: review-locked
+        type: 7
+        label: "Values users can't change"
+        group: "Review"
+        description: "These settings show in the review as set by the organisation, and users' edits to them are ignored."
+        options:
+          - label: "Publisher"
+            value: "publisher"
+          - label: "Rights"
+            value: "rights"
+    supports-preview: ${DEPOSIT_FEDORA_SUPPORTS_PREVIEW:true}
     user-configuration-fields:
       - code: fedora-username
         type: 0

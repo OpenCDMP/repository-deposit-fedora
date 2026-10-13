@@ -6,12 +6,19 @@ import org.apache.jena.rdf.model.Model;
 import org.apache.jena.rdf.model.ModelFactory;
 import org.apache.jena.rdf.model.Property;
 import org.apache.jena.rdf.model.RDFNode;
+import gr.cite.tools.exception.MyApplicationException;
 import org.opencdmp.commonmodels.models.FileEnvelopeModel;
+import org.opencdmp.commonmodels.models.deposit.DepositPreviewModel;
 import org.opencdmp.commonmodels.models.plan.PlanModel;
 import org.opencdmp.commonmodels.models.plugin.PluginUserFieldModel;
+import org.opencdmp.deposit.fedorarepository.configuration.semantics.FedoraSemanticsManifest;
+import org.opencdmp.deposit.fedorarepository.configuration.semantics.SemanticsProperties;
 import org.opencdmp.deposit.fedorarepository.model.builder.FedoraBuilder;
+import org.opencdmp.deposit.fedorarepository.model.builder.FedoraPreviewMapper;
 import org.opencdmp.deposit.fedorarepository.service.storage.FileStorageService;
 import org.opencdmp.depositbase.repository.DepositConfiguration;
+import org.opencdmp.depositbase.repository.DepositPluginSettings;
+import org.opencdmp.depositbase.repository.DepositPreviewMergeHelper;
 import org.opencdmp.depositbase.repository.PlanDepositModel;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -41,6 +48,9 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
 
     private static final String CONFIGURATION_FIELD_USERNAME = "fedora-username";
     private static final String CONFIGURATION_FIELD_PASSWORD = "fedora-password";
+    private static final String SETTING_ORGANISATION_USERNAME = "organisation-username";
+    private static final String SETTING_ORGANISATION_PASSWORD = "organisation-password";
+    private static final String SETTING_CONTAINER = "container";
 
     private static final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -48,17 +58,18 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     private final FedoraBuilder fedoraBuilder;
     private final FileStorageService storageService;
     private final ResourceLoader resourceLoader;
+    private final FedoraPreviewMapper fedoraPreviewMapper;
 
     private byte[] logo;
-    private String username;
-    private String password;
 
     @Autowired
-    public FedoraDepositServiceImpl(FedoraServiceProperties fedoraServiceProperties, FedoraBuilder fedoraBuilder, FileStorageService storageService, ResourceLoader resourceLoader){
+    public FedoraDepositServiceImpl(FedoraServiceProperties fedoraServiceProperties, FedoraBuilder fedoraBuilder, FileStorageService storageService, ResourceLoader resourceLoader, FedoraPreviewMapper fedoraPreviewMapper, SemanticsProperties semanticsProperties){
         this.fedoraServiceProperties = fedoraServiceProperties;
         this.fedoraBuilder = fedoraBuilder;
 	    this.storageService = storageService;
         this.resourceLoader = resourceLoader;
+        this.fedoraPreviewMapper = fedoraPreviewMapper;
+        this.fedoraServiceProperties.getDepositConfiguration().setSemantics(FedoraSemanticsManifest.build(semanticsProperties));
         this.logo = null;
     }
 
@@ -69,22 +80,33 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
 
         if(depositConfiguration != null && planDepositModel != null && planDepositModel.getPlanModel() != null) {
 
+            DepositPluginSettings settings = DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration);
+            String username = null;
+            String password = null;
+
             if (planDepositModel.getAuthInfo() != null) {
                 if (planDepositModel.getAuthInfo().getAuthFields() != null && !planDepositModel.getAuthInfo().getAuthFields().isEmpty() && depositConfiguration.getUserConfigurationFields() != null) {
                     PluginUserFieldModel usernameFieldMode = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_USERNAME)).findFirst().orElse(null);
                     PluginUserFieldModel passwordFieldModel = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_PASSWORD)).findFirst().orElse(null);
                     if (usernameFieldMode != null && usernameFieldMode.getTextValue() != null && !usernameFieldMode.getTextValue().isBlank()
                         && passwordFieldModel != null && passwordFieldModel.getTextValue() != null && !passwordFieldModel.getTextValue().isBlank()) {
-                        this.username = usernameFieldMode.getTextValue();
-                        this.password = passwordFieldModel.getTextValue();
+                        username = usernameFieldMode.getTextValue();
+                        password = passwordFieldModel.getTextValue();
                     }
                 }
             }
 
-            if ((this.username == null || this.username.isBlank()) && (this.password == null || this.password.isBlank())) {
-                this.username = this.fedoraServiceProperties.getUsername();
-                this.password = this.fedoraServiceProperties.getPassword();
+            if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
+                username = settings.text(SETTING_ORGANISATION_USERNAME);
+                password = settings.text(SETTING_ORGANISATION_PASSWORD);
             }
+
+            if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
+                username = this.fedoraServiceProperties.getUsername();
+                password = this.fedoraServiceProperties.getPassword();
+            }
+
+            HttpHeaders auth = this.createHeaders(username, password);
 
             String baseUrl = depositConfiguration.getRepositoryUrl();
 
@@ -98,9 +120,9 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
             try {
 
                 if (previousDOI == null) {
-                    return deposit(baseUrl, client, planDepositModel.getPlanModel());
+                    return deposit(baseUrl, client, planDepositModel, settings, auth);
                 } else {
-                    return depositNewVersion(baseUrl, client, planDepositModel.getPlanModel());
+                    return depositNewVersion(baseUrl, client, planDepositModel, settings, auth);
                 }
 
             } catch (HttpClientErrorException | HttpServerErrorException ex) {
@@ -132,13 +154,24 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
         throw new IllegalArgumentException("No identifier found in URL");
     }
 
-    private HttpHeaders createHeaders() {
+    private HttpHeaders createHeaders(String username, String password) {
         HttpHeaders headers = new HttpHeaders();
-        headers.setBasicAuth(this.username, this.password);
+        headers.setBasicAuth(username, password);
         return headers;
     }
 
-    private String depositNewVersion(String baseUrl, WebClient client, PlanModel planModel){
+    /** The container new records are created in, relative to the repository url and without surrounding slashes; empty for the root. */
+    private String container(DepositPluginSettings settings) {
+        String container = settings.text(SETTING_CONTAINER, this.fedoraServiceProperties.getCollection());
+        if (container == null) return "";
+        container = container.trim();
+        while (container.startsWith("/")) container = container.substring(1);
+        while (container.endsWith("/")) container = container.substring(0, container.length() - 1);
+        return container;
+    }
+
+    private String depositNewVersion(String baseUrl, WebClient client, PlanDepositModel planDepositModel, DepositPluginSettings settings, HttpHeaders auth){
+        PlanModel planModel = planDepositModel.getPlanModel();
         String resourceUri = baseUrl + planModel.getPreviousDOI();
 
         logger.debug(new MapLogEntry("Deposit New Version")
@@ -146,34 +179,36 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
                 .And("plan", planModel));
 
         String response = client.post().uri(resourceUri + "/fcr:versions").headers(httpHeaders -> {
-                    httpHeaders.putAll(this.createHeaders());
+                    httpHeaders.putAll(auth);
                 }).contentType(MediaType.valueOf("text/turtle"))
                 .retrieve()
                 .bodyToMono(String.class)
                 .block();
+        Model body = this.fedoraBuilder.build(planModel);
+        this.fedoraPreviewMapper.applyOverrides(body, planDepositModel.getEditedFields(), planDepositModel.getEditedGroups(), settings);
 
         client.put()
                 .uri(resourceUri)
-                .headers(httpHeaders -> httpHeaders.putAll(this.createHeaders()))
+                .headers(httpHeaders -> httpHeaders.putAll(auth))
                 .contentType(MediaType.valueOf("text/turtle"))
-                .bodyValue(this.fedoraBuilder.build(planModel))
+                .bodyValue(this.fedoraBuilder.serialize(body))
                 .retrieve()
                 .toBodilessEntity()
                 .block();
 
-        this.deleteFiles(resourceUri);
+        this.deleteFiles(resourceUri, auth);
 
-        this.uploadFiles(planModel, resourceUri);
+        this.uploadFiles(planModel, resourceUri, auth);
 
         return planModel.getPreviousDOI();
     }
 
-    private void deleteFiles(String resourceUri) {
+    private void deleteFiles(String resourceUri, HttpHeaders auth) {
         WebClient client = this.getWebClient();
 
         String turtle = client.get()
                 .uri(resourceUri)
-                .headers(httpHeaders -> httpHeaders.putAll(this.createHeaders()))
+                .headers(httpHeaders -> httpHeaders.putAll(auth))
                 .accept(MediaType.valueOf("text/turtle"))
                 .retrieve()
                 .bodyToMono(String.class)
@@ -201,7 +236,7 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
                 logger.debug("Deleting child: {}", childUri);
                 client.delete()
                         .uri(childUri)
-                        .headers(httpHeaders -> httpHeaders.putAll(this.createHeaders()))
+                        .headers(httpHeaders -> httpHeaders.putAll(auth))
                         .retrieve()
                         .toBodilessEntity()
                         .block();
@@ -212,34 +247,43 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     }
 
 
-    private String deposit(String baseUrl, WebClient client, PlanModel planModel){
+    private String deposit(String baseUrl, WebClient client, PlanDepositModel planDepositModel, DepositPluginSettings settings, HttpHeaders auth){
         String response;
+        PlanModel planModel = planDepositModel.getPlanModel();
+        String container = this.container(settings);
+        String containerUrl = container.isEmpty() ? baseUrl : (baseUrl.endsWith("/") ? baseUrl : baseUrl + "/") + container;
         logger.debug(new MapLogEntry("Deposit")
-                .And("url", baseUrl)
+                .And("url", containerUrl)
                 .And("plan", planModel));
 
-        response = client.post().uri(baseUrl).headers(httpHeaders -> {
-            httpHeaders.putAll(this.createHeaders());
+        Model model = this.fedoraBuilder.build(planModel);
+        this.fedoraPreviewMapper.applyOverrides(model, planDepositModel.getEditedFields(), planDepositModel.getEditedGroups(), settings);
+        response = client.post().uri(containerUrl).headers(httpHeaders -> {
+            httpHeaders.putAll(auth);
         }).contentType(MediaType.valueOf("text/turtle"))
-        .bodyValue(this.fedoraBuilder.build(planModel))
+        .bodyValue(this.fedoraBuilder.serialize(model))
         .retrieve()
+        .onStatus(status -> !container.isEmpty() && status.value() == HttpStatus.NOT_FOUND.value(),
+                x -> Mono.error(new MyApplicationException("The Fedora container '" + container + "' does not exist. Create it in the repository or change the container setting.")))
         .bodyToMono(String.class)
         .block();
 
         if (response == null) return null;
 
-        this.uploadFiles(planModel, response);
+        this.uploadFiles(planModel, response, auth);
 
-        return this.getIdFromHandle(response);
+        // the identifier is the record's path relative to the repository url, which is where new versions look for it
+        String id = this.getIdFromHandle(response);
+        return container.isEmpty() ? id : container + "/" + id;
     }
 
-    private void uploadFiles(PlanModel planModel, String url){
-        if (planModel.getPdfFile() != null) this.uploadFile(planModel.getPdfFile(), url , "application/pdf", planModel.getVersion());
-        if (planModel.getRdaJsonFile() != null) this.uploadFile(planModel.getRdaJsonFile(), url, "application/json", planModel.getVersion());
-        if (planModel.getSupportingFilesZip() != null) this.uploadFile(planModel.getSupportingFilesZip(), url, "application/zip", planModel.getVersion());
+    private void uploadFiles(PlanModel planModel, String url, HttpHeaders auth){
+        if (planModel.getPdfFile() != null) this.uploadFile(planModel.getPdfFile(), url , "application/pdf", planModel.getVersion(), auth);
+        if (planModel.getRdaJsonFile() != null) this.uploadFile(planModel.getRdaJsonFile(), url, "application/json", planModel.getVersion(), auth);
+        if (planModel.getSupportingFilesZip() != null) this.uploadFile(planModel.getSupportingFilesZip(), url, "application/zip", planModel.getVersion(), auth);
     }
 
-    private void uploadFile(FileEnvelopeModel fileEnvelopeModel, String baseUrl, String  contentType, int version) {
+    private void uploadFile(FileEnvelopeModel fileEnvelopeModel, String baseUrl, String  contentType, int version, HttpHeaders auth) {
 
         byte[] content = null;
         if (this.getConfiguration().isUseSharedStorage() && fileEnvelopeModel.getFileRef() != null && !fileEnvelopeModel.getFileRef().isBlank()) {
@@ -252,7 +296,7 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
         String url = baseUrl + "/" + cleanFileName(fileEnvelopeModel.getFilename(), version);
 
         this.getWebClient().put().uri(url).headers(httpHeaders -> {
-                    httpHeaders.putAll(this.createHeaders());
+                    httpHeaders.putAll(auth);
                 })
                 .contentType(MediaType.valueOf(contentType))
                 .body(BodyInserters
@@ -284,6 +328,18 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     @Override
     public String authenticate(String code){
         return null;
+    }
+
+    @Override
+    public DepositPreviewModel preview(PlanDepositModel planDepositModel) {
+        if (planDepositModel == null || planDepositModel.getPlanModel() == null) return null;
+        Model dataset = this.fedoraBuilder.build(planDepositModel.getPlanModel());
+        List<String> uploadFileNames = new ArrayList<>();
+        PlanModel planModel = planDepositModel.getPlanModel();
+        if (planModel.getPdfFile() != null && planModel.getPdfFile().getFilename() != null) uploadFileNames.add(planModel.getPdfFile().getFilename());
+        if (planModel.getRdaJsonFile() != null && planModel.getRdaJsonFile().getFilename() != null) uploadFileNames.add(planModel.getRdaJsonFile().getFilename());
+        if (planModel.getSupportingFilesZip() != null && planModel.getSupportingFilesZip().getFilename() != null) uploadFileNames.add(planModel.getSupportingFilesZip().getFilename());
+        return this.fedoraPreviewMapper.toPreview(dataset, uploadFileNames, DepositPluginSettings.of(planModel, this.getConfiguration()));
     }
 
     @Override
