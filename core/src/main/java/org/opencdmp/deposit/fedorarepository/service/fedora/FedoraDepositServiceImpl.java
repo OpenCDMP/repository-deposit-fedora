@@ -1,5 +1,7 @@
 package org.opencdmp.deposit.fedorarepository.service.fedora;
 
+import org.springframework.web.reactive.function.client.WebClientResponseException;
+import gr.cite.tools.exception.MyValidationException;
 import gr.cite.tools.logging.LoggerService;
 import gr.cite.tools.logging.MapLogEntry;
 import org.apache.jena.rdf.model.Model;
@@ -16,6 +18,7 @@ import org.opencdmp.deposit.fedorarepository.configuration.semantics.SemanticsPr
 import org.opencdmp.deposit.fedorarepository.model.builder.FedoraBuilder;
 import org.opencdmp.deposit.fedorarepository.model.builder.FedoraPreviewMapper;
 import org.opencdmp.deposit.fedorarepository.service.storage.FileStorageService;
+import org.opencdmp.depositbase.repository.DepositAccount;
 import org.opencdmp.depositbase.repository.DepositConfiguration;
 import org.opencdmp.depositbase.repository.DepositPluginSettings;
 import org.opencdmp.depositbase.repository.DepositPreviewMergeHelper;
@@ -28,8 +31,6 @@ import org.springframework.core.io.ResourceLoader;
 import org.springframework.http.*;
 import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Component;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.ExchangeFilterFunction;
 import org.springframework.web.reactive.function.client.WebClient;
@@ -40,7 +41,6 @@ import java.util.*;
 
 
 import reactor.netty.http.client.HttpClient;
-import tools.jackson.databind.ObjectMapper;
 
 @Component
 public class FedoraDepositServiceImpl implements FedoraDepositService {
@@ -52,7 +52,6 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     private static final String SETTING_ORGANISATION_PASSWORD = "organisation-password";
     private static final String SETTING_CONTAINER = "container";
 
-    private static final ObjectMapper objectMapper = new ObjectMapper();
 
     private final FedoraServiceProperties fedoraServiceProperties;
     private final FedoraBuilder fedoraBuilder;
@@ -81,32 +80,9 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
         if(depositConfiguration != null && planDepositModel != null && planDepositModel.getPlanModel() != null) {
 
             DepositPluginSettings settings = DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration);
-            String username = null;
-            String password = null;
+            Credentials credentials = this.credentials(planDepositModel, depositConfiguration, settings);
 
-            if (planDepositModel.getAuthInfo() != null) {
-                if (planDepositModel.getAuthInfo().getAuthFields() != null && !planDepositModel.getAuthInfo().getAuthFields().isEmpty() && depositConfiguration.getUserConfigurationFields() != null) {
-                    PluginUserFieldModel usernameFieldMode = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_USERNAME)).findFirst().orElse(null);
-                    PluginUserFieldModel passwordFieldModel = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_PASSWORD)).findFirst().orElse(null);
-                    if (usernameFieldMode != null && usernameFieldMode.getTextValue() != null && !usernameFieldMode.getTextValue().isBlank()
-                        && passwordFieldModel != null && passwordFieldModel.getTextValue() != null && !passwordFieldModel.getTextValue().isBlank()) {
-                        username = usernameFieldMode.getTextValue();
-                        password = passwordFieldModel.getTextValue();
-                    }
-                }
-            }
-
-            if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
-                username = settings.text(SETTING_ORGANISATION_USERNAME);
-                password = settings.text(SETTING_ORGANISATION_PASSWORD);
-            }
-
-            if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
-                username = this.fedoraServiceProperties.getUsername();
-                password = this.fedoraServiceProperties.getPassword();
-            }
-
-            HttpHeaders auth = this.createHeaders(username, password);
+            HttpHeaders auth = this.createHeaders(credentials.username(), credentials.password());
 
             String baseUrl = depositConfiguration.getRepositoryUrl();
 
@@ -125,14 +101,8 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
                     return depositNewVersion(baseUrl, client, planDepositModel, settings, auth);
                 }
 
-            } catch (HttpClientErrorException | HttpServerErrorException ex) {
-                logger.error(ex.getMessage(), ex);
-                Map<String, String> parsedException = objectMapper.readValue(ex.getResponseBodyAsString(), Map.class);
-                try {
-                    throw new IOException(parsedException.get("message"), ex);
-                } catch (IOException e) {
-                    throw new RuntimeException(e);
-                }
+            } catch (WebClientResponseException ex) {
+                throw this.toException(ex);
             }
 
         }
@@ -264,17 +234,47 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
         .bodyValue(this.fedoraBuilder.serialize(model))
         .retrieve()
         .onStatus(status -> !container.isEmpty() && status.value() == HttpStatus.NOT_FOUND.value(),
-                x -> Mono.error(new MyApplicationException("The Fedora container '" + container + "' does not exist. Create it in the repository or change the container setting.")))
+                x -> Mono.error(new MyValidationException("The container '" + container + "' does not exist in the repository. Create it there or change the container setting.")))
         .bodyToMono(String.class)
         .block();
 
         if (response == null) return null;
 
-        this.uploadFiles(planModel, response, auth);
+        try {
+            this.uploadFiles(planModel, response, auth);
+        } catch (RuntimeException ex) {
+            this.deleteRecord(response, auth);
+            throw ex;
+        }
 
         // the identifier is the record's path relative to the repository url, which is where new versions look for it
         String id = this.getIdFromHandle(response);
         return container.isEmpty() ? id : container + "/" + id;
+    }
+
+    /** Deletes the record and its tombstone, so nothing is left behind in the repository. */
+    private void deleteRecord(String recordUrl, HttpHeaders auth) {
+        WebClient client = this.getWebClient();
+        try {
+            client.delete().uri(recordUrl).headers(httpHeaders -> httpHeaders.putAll(auth)).retrieve().toBodilessEntity().block();
+            client.delete().uri(recordUrl + "/fcr:tombstone").headers(httpHeaders -> httpHeaders.putAll(auth)).retrieve().toBodilessEntity().block();
+        } catch (Exception e) {
+            logger.warn(new MapLogEntry("Could not remove the record").And("url", recordUrl).And("error", e.getMessage()));
+        }
+    }
+
+    /** What the repository answered, as the user should see it; its errors are plain text, its authentication errors a server page. */
+    private RuntimeException toException(WebClientResponseException ex) {
+        logger.error(ex.getMessage(), ex);
+        int status = ex.getStatusCode().value();
+        if (status == HttpStatus.UNAUTHORIZED.value()) return new MyValidationException("The repository did not accept the account's username and password.");
+        if (status == HttpStatus.FORBIDDEN.value()) return new MyValidationException("The account is not allowed to add records to the repository.");
+        String body = ex.getResponseBodyAsString();
+        boolean text = ex.getHeaders().getContentType() == null || !MediaType.TEXT_HTML.isCompatibleWith(ex.getHeaders().getContentType());
+        String message = text && body != null && !body.isBlank() ? body.trim() : ex.getStatusText();
+        if (message.startsWith("Error: ")) message = message.substring("Error: ".length());
+        if (ex.getStatusCode().is4xxClientError()) return new MyValidationException("The repository refused the deposit: " + message);
+        return new MyApplicationException("The repository could not take the deposit: " + message);
     }
 
     private void uploadFiles(PlanModel planModel, String url, HttpHeaders auth){
@@ -324,7 +324,57 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     public DepositConfiguration getConfiguration() {
         return this.fedoraServiceProperties.getDepositConfiguration();
     }
-    
+
+    private record Credentials(String username, String password) {}
+
+    private Credentials credentials(PlanDepositModel planDepositModel, DepositConfiguration depositConfiguration, DepositPluginSettings settings) {
+        String username = null;
+        String password = null;
+
+        if (planDepositModel.getAuthInfo() != null) {
+            if (planDepositModel.getAuthInfo().getAuthFields() != null && !planDepositModel.getAuthInfo().getAuthFields().isEmpty() && depositConfiguration.getUserConfigurationFields() != null) {
+                PluginUserFieldModel usernameFieldMode = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_USERNAME)).findFirst().orElse(null);
+                PluginUserFieldModel passwordFieldModel = planDepositModel.getAuthInfo().getAuthFields().stream().filter(x -> x.getCode().equals(CONFIGURATION_FIELD_PASSWORD)).findFirst().orElse(null);
+                if (usernameFieldMode != null && usernameFieldMode.getTextValue() != null && !usernameFieldMode.getTextValue().isBlank()
+                    && passwordFieldModel != null && passwordFieldModel.getTextValue() != null && !passwordFieldModel.getTextValue().isBlank()) {
+                    username = usernameFieldMode.getTextValue();
+                    password = passwordFieldModel.getTextValue();
+                }
+            }
+        }
+
+        if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
+            username = settings.text(SETTING_ORGANISATION_USERNAME);
+            password = settings.text(SETTING_ORGANISATION_PASSWORD);
+        }
+
+        if ((username == null || username.isBlank()) && (password == null || password.isBlank())) {
+            username = this.fedoraServiceProperties.getUsername();
+            password = this.fedoraServiceProperties.getPassword();
+        }
+        return new Credentials(username, password);
+    }
+
+    @Override
+    public DepositAccount account(PlanDepositModel planDepositModel) {
+        DepositConfiguration depositConfiguration = this.getConfiguration();
+        if (depositConfiguration == null || planDepositModel == null || planDepositModel.getPlanModel() == null) return null;
+
+        try {
+            // Fedora has no endpoint that describes an account, so the account is the username the deposit signed in with; the password is never returned
+            String username = this.credentials(planDepositModel, depositConfiguration, DepositPluginSettings.of(planDepositModel.getPlanModel(), depositConfiguration)).username();
+            if (username == null || username.isBlank()) return null;
+
+            DepositAccount account = new DepositAccount();
+            account.setId(username);
+            account.setName(username);
+            return account;
+        } catch (Exception ex) {
+            logger.error("could not tell the Fedora account of the deposit", ex);
+            return null;
+        }
+    }
+
     @Override
     public String authenticate(String code){
         return null;
@@ -390,10 +440,11 @@ public class FedoraDepositServiceImpl implements FedoraDepositService {
     private static ExchangeFilterFunction logResponse() {
         return ExchangeFilterFunction.ofResponseProcessor(response -> {
             if (response.statusCode().isError()) {
-                return response.mutate().build().bodyToMono(String.class)
-                    .flatMap(body -> {
+                // reading the body consumes it, so the response passed on gets it back for the caller to read the repository's message
+                return response.bodyToMono(String.class).defaultIfEmpty("")
+                    .map(body -> {
                         logger.error(new MapLogEntry("Response").And("method", response.request().getMethod().toString()).And("url", response.request().getURI()).And("status", response.statusCode().toString()).And("body", body));
-                        return Mono.just(response);
+                        return response.mutate().body(body).build();
                     });
             }
             return Mono.just(response);

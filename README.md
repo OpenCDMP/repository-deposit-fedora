@@ -71,6 +71,10 @@ For each deposit, the service signs in to Fedora with the first of these that is
 
 OpenCDMP decides which accounts a user may publish under, and never falls back to the organisation's or the installation's account when a user chose their own. See [Publishing accounts and files](https://opencdmp.github.io/optional-services/deposit-services/#publishing-accounts-and-files).
 
+### The account a deposit used
+
+After a deposit under a user's own account, OpenCDMP calls `POST /api/deposit/account` with the same credentials. Fedora has no endpoint that describes an account, so the service does not contact it: it returns the username the deposit signed in with, as both the id and the name to show, and never the password. OpenCDMP keeps it with the resource's path and names that account when a later version is published. It never asks for the organisation's or the installation's account, so their usernames are not stored or shown to users. The service returns nothing when no username is set, and the deposit is not affected.
+
 ## Register with OpenCDMP
 
 Register the service for the whole installation in the configuration of the API service, or for one organisation under **Settings > Plugins > Add plugin**. Use the plugin id `fedora`, and register a PDF and an RDA JSON transformer with it. See [Registering plugin services](https://opencdmp.github.io/deployment/configuration/plugin-services/) and [Organisation plugins](https://opencdmp.github.io/administering/tenant-management/plugins/).
@@ -83,6 +87,7 @@ All endpoints are under `/api/deposit`. They accept only a Bearer token from the
 | --- | --- |
 | `POST /api/deposit` | Deposit a plan and return the resource's path |
 | `POST /api/deposit/preview` | Return the metadata that would be deposited, as an editable form |
+| `POST /api/deposit/account` | Return the Fedora username that a deposit signed in with (see [The account a deposit used](#the-account-a-deposit-used)) |
 | `GET /api/deposit/configuration` | Return the service's `DepositConfiguration` |
 | `GET /api/deposit/logo` | Return the Fedora logo, Base64-encoded |
 
