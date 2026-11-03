@@ -10,7 +10,7 @@ The service implements the [repository-deposit-base](https://github.com/OpenCDMP
 - Publishes under the organisation's account or the user's own account, with a Fedora username and password
 - Uploads the plan document (PDF), the machine-actionable plan (RDA JSON) and the supporting files (ZIP)
 - Lets users review and edit the resource's metadata before it is published
-- Fills Dublin Core elements from the answers of the plan blueprint and asset templates, through [semantics](https://opencdmp.github.io/optional-services/deposit-services/fedora-semantics/)
+- Fills Dublin Core elements from the answers of the plan blueprint and asset templates, through [semantics](https://opencdmp.github.io/optional-services/deposit-services/fedora-semantics/), including keys a reference input takes from its reference type (the picked reference's ID, name, description, or one of its fields)
 
 ## Requirements
 

@@ -20,7 +20,8 @@ import java.util.Objects;
  * its public page as identifier when the organisation's settings keep them, so nothing a template or blueprint leaves
  * out breaks it. Keys are read from
  * blueprint and template inputs alike, every answer becomes its own triple, and a reference input gives its
- * reference's code.
+ * reference's code. A reference input without the key answers it too when its reference type gives the key to the
+ * reference's id, name, description or one of its fields.
  */
 public final class FedoraSemanticsManifest {
 
@@ -64,6 +65,8 @@ public final class FedoraSemanticsManifest {
                     known != null ? known.element() : "dc:" + name);
             usage.setFormat(SemanticValueFormat.Text);
             usage.setMultiple(true);
+            // every key is read through the reference type of a reference input too
+            usage.setFromReferenceFields(true);
             usages.add(usage);
         }
         return new SemanticsManifest(List.of(new SemanticVocabulary(PREFIX, "Fedora (Dublin Core)", false)), usages);
